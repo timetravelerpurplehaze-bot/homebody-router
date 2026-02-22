@@ -6,10 +6,13 @@ Add API keys to .env or environment before use.
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load from router/.env explicitly (works regardless of cwd)
+_ENV_FILE = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=_ENV_FILE)
 
 # ---------------------------------------------------------------------------
 # Tier definitions
@@ -63,7 +66,7 @@ class RouterConfig:
     retries_per_model: int = 1
 
     # Timeout in seconds per model call
-    timeout_seconds: int = 60
+    timeout_seconds: int = 180
 
     # Log routing decisions to file
     log_file: Optional[str] = None
@@ -73,13 +76,25 @@ class RouterConfig:
 DEFAULT_CONFIG = RouterConfig()
 
 
+def _key_is_real(val: str) -> bool:
+    """Returns True only if the value looks like a real API key (not a placeholder)."""
+    if not val:
+        return False
+    placeholders = {"sk-ant-...", "sk-...", "AIza...", "your_key_here", "placeholder"}
+    if val.strip() in placeholders:
+        return False
+    if val.strip().endswith("..."):
+        return False
+    return len(val.strip()) > 10
+
+
 def available_models_for_tier(tier: int) -> list[str]:
-    """Return only models whose provider API key is set."""
+    """Return only models whose provider API key is set and looks real."""
     result = []
     for model in TIERS.get(tier, []):
         provider = model.split("/")[0]
         key_name = PROVIDER_API_KEYS.get(provider)
-        if key_name and os.environ.get(key_name):
+        if key_name and _key_is_real(os.environ.get(key_name, "")):
             result.append(model)
     return result
 

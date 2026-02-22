@@ -40,6 +40,8 @@ def cmd_engage(args):
         data_files=data_files,
         competitors=competitors,
         channels=channels,
+        skip_cost_confirm=getattr(args, "yes", False),
+        auto_approve_under=getattr(args, "auto_approve_under", None),
     )
 
     print(f"\n{'='*60}")
@@ -73,6 +75,18 @@ def cmd_history(args):
         print(f"  [{e['created_at'][:10]}] {e['title']}  ({e['project_type']})  client={e.get('client','?')}")
 
 
+def cmd_estimate(args):
+    from agents.strategy_consultant.cost_estimator import estimate, format_estimate
+    competitors = args.competitors.split(",") if args.competitors else []
+    data_files  = args.data.split(",") if args.data else []
+    est = estimate(
+        proactivity=args.proactivity,
+        has_data_files=bool(data_files),
+        n_competitors=len(competitors),
+    )
+    print(format_estimate(est))
+
+
 def cmd_validate(args):
     if args.agent:
         from agents.strategy_consultant.validate import run_one
@@ -94,7 +108,10 @@ def main():
     ep.add_argument("--proactivity", default="medium", choices=["high","medium","low"])
     ep.add_argument("--data",        default="", help="Comma-separated file paths to upload")
     ep.add_argument("--competitors", default="", help="Comma-separated competitor names")
-    ep.add_argument("--channels",    default="", help='JSON: [{"type":"telegram","to":"..."}]')
+    ep.add_argument("--channels",          default="",   help='JSON: [{"type":"telegram","to":"..."}]')
+    ep.add_argument("--yes",               action="store_true", help="Skip cost confirmation prompt")
+    ep.add_argument("--auto-approve-under",type=float, default=None, dest="auto_approve_under",
+                    help="Auto-approve if estimated cost is under this amount (USD)")
 
     # questions
     qp = sub.add_parser("questions", help="Get intake questions for a problem (no full run)")
@@ -104,12 +121,24 @@ def main():
     hp = sub.add_parser("history", help="List past engagements")
     hp.add_argument("query", nargs="?", default="", help="Search keyword")
 
+    # estimate
+    estp = sub.add_parser("estimate", help="Show cost estimate without running")
+    estp.add_argument("--proactivity", default="medium", choices=["high","medium","low"])
+    estp.add_argument("--competitors",  default="", help="Comma-separated competitor names")
+    estp.add_argument("--data",         default="", help="Comma-separated data files")
+
     # validate
     vp = sub.add_parser("validate", help="Validate agents")
     vp.add_argument("agent", nargs="?", default="", help="Agent name (omit to test all)")
 
     args = parser.parse_args()
-    {"engage": cmd_engage, "questions": cmd_questions, "history": cmd_history, "validate": cmd_validate}[args.cmd](args)
+    {
+        "engage":    cmd_engage,
+        "questions": cmd_questions,
+        "history":   cmd_history,
+        "validate":  cmd_validate,
+        "estimate":  cmd_estimate,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

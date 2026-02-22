@@ -14,6 +14,7 @@ sys.path.insert(0, str(WORKSPACE))
 
 from .config import ProjectType, Proactivity, ENGAGEMENTS_DIR
 from .state import EngagementState, search_engagements
+from .cost_estimator import estimate, format_estimate, confirm
 from .agents import (
     IntakeAgent, DataProcessorAgent, ResearchAgent, FrameworksAgent,
     FinancialAgent, BenchmarkingAgent, RedTeamAgent, SynthesisAgent,
@@ -60,11 +61,27 @@ class EngagementPartner:
         competitors: list = None,
         channels: list = None,
         answers: dict = None,
+        skip_cost_confirm: bool = False,
+        auto_approve_under: float = None,
     ) -> dict:
         """
         Run a full consulting engagement end-to-end.
         Returns engagement_id and path to final PDF.
         """
+        # ── 0. Cost estimate gate ─────────────────────────────────────────────
+        cost_est = estimate(
+            proactivity=proactivity.value,
+            has_data_files=bool(data_files),
+            n_competitors=len(competitors or []),
+        )
+        logger.info(format_estimate(cost_est))
+
+        if not skip_cost_confirm:
+            approved = confirm(cost_est, auto_approve_under=auto_approve_under)
+            if not approved:
+                logger.info("Engagement cancelled by user.")
+                return {"error": "cancelled", "reason": "User declined after cost estimate."}
+
         # ── 1. Check for relevant prior engagements ───────────────────────────
         prior = search_engagements(query=problem[:30])
         if prior:
