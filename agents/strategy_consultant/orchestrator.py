@@ -15,6 +15,7 @@ sys.path.insert(0, str(WORKSPACE))
 from .config import ProjectType, Proactivity, ENGAGEMENTS_DIR
 from .state import EngagementState, search_engagements
 from .cost_estimator import estimate, format_estimate, confirm
+from .status_reporter import StatusReporter
 from .agents import (
     IntakeAgent, DataProcessorAgent, ResearchAgent, FrameworksAgent,
     FinancialAgent, BenchmarkingAgent, RedTeamAgent, SynthesisAgent,
@@ -82,6 +83,20 @@ class EngagementPartner:
                 logger.info("Engagement cancelled by user.")
                 return {"error": "cancelled", "reason": "User declined after cost estimate."}
 
+        # ── 0b. Start status reporter ─────────────────────────────────────────
+        tg_target = "8296787175"
+        if channels:
+            tg_ch = next((c for c in channels if c.get("type") == "telegram"), None)
+            if tg_ch:
+                tg_target = tg_ch.get("to", tg_target)
+
+        reporter = StatusReporter(
+            chat_id=tg_target,
+            title=title or problem[:60],
+            interval_s=300,  # every 5 minutes
+        )
+        reporter.start()
+
         # ── 1. Check for relevant prior engagements ───────────────────────────
         prior = search_engagements(query=problem[:30])
         if prior:
@@ -89,8 +104,10 @@ class EngagementPartner:
 
         # ── 2. Intake ──────────────────────────────────────────────────────────
         logger.info("=== PHASE 1: INTAKE ===")
+        reporter.set_phase("intake", ["intake"])
         intake_result = self.intake_agent.run(problem=problem, answers=answers, proactivity=proactivity.value)
         project_type = intake_result["project_type"]
+        reporter.complete_workstream("intake")
         logger.info(f"Project type: {project_type}")
 
         # ── 3. Create engagement state ─────────────────────────────────────────
@@ -107,6 +124,7 @@ class EngagementPartner:
 
         # ── 4. Data processing ─────────────────────────────────────────────────
         data_summary = ""
+        reporter.set_phase("data", ["data_processing"] if data_files else [])
         if data_files:
             logger.info("=== PHASE 2: DATA PROCESSING ===")
             # Copy files to engagement data dir
@@ -144,6 +162,7 @@ Prior Engagements:
         # ── 6. Parallel analysis workstreams ──────────────────────────────────
         logger.info("=== PHASE 3: PARALLEL ANALYSIS ===")
         state.set_status("analysis")
+        reporter.set_phase("analysis", ["research", "frameworks", "financial", "benchmarks"])
 
         def run_research():
             r = self.research_agent.run(
@@ -152,11 +171,13 @@ Prior Engagements:
                 include_papers=("ai" in project_type or "tech" in problem.lower())
             )
             state.write_workstream("research", r)
+            reporter.complete_workstream("research")
             return "research", r
 
         def run_frameworks():
             r = self.frameworks_agent.run(context=context, project_type=project_type)
             state.write_workstream("frameworks", r)
+            reporter.complete_workstream("frameworks")
             return "frameworks", r
 
         def run_financial():
@@ -164,6 +185,7 @@ Prior Engagements:
                 context=context, project_type=project_type, data_extracted=data_summary
             )
             state.write_workstream("financial", r)
+            reporter.complete_workstream("financial")
             return "financial", r
 
         def run_benchmarks():
@@ -172,6 +194,7 @@ Prior Engagements:
                 peers=competitors or []
             )
             state.write_workstream("benchmarks", r)
+            reporter.complete_workstream("benchmarks")
             return "benchmarks", r
 
         workstream_results = {}
@@ -189,35 +212,43 @@ Prior Engagements:
 
         # ── 7. Red Team ───────────────────────────────────────────────────────
         logger.info("=== PHASE 4: RED TEAM ===")
+        reporter.set_phase("red_team", ["red_team"])
         redteam = self.redteam_agent.run(workstreams=workstream_results)
         state.write_workstream("redteam", redteam)
+        reporter.complete_workstream("red_team")
 
         # ── 8. Synthesis (Opus) ───────────────────────────────────────────────
         logger.info("=== PHASE 5: SYNTHESIS ===")
         state.set_status("synthesis")
+        reporter.set_phase("synthesis", ["synthesis"])
         synthesis = self.synthesis_agent.run(
             intake=intake_result,
             workstreams=workstream_results,
             red_team=redteam,
         )
         state.write_workstream("synthesis", synthesis.get("full_synthesis", ""))
+        reporter.complete_workstream("synthesis")
 
         # ── 9. Write PDF ───────────────────────────────────────────────────────
         logger.info("=== PHASE 6: WRITING REPORT ===")
         state.set_status("writing")
+        reporter.set_phase("writing", ["writer"])
         self.writer_agent.state = state
         pdf_path = self.writer_agent.run(state, synthesis)
+        reporter.complete_workstream("writer")
         logger.info(f"PDF generated: {pdf_path}")
 
         # ── 10. Deliver ────────────────────────────────────────────────────────
         logger.info("=== PHASE 7: DELIVERY ===")
         state.set_status("delivered")
+        reporter.set_phase("delivered")
         comms_results = self.comms_agent.run(
             engagement_state=state,
             synthesis_result=synthesis,
             pdf_path=pdf_path,
             channels=channels or [{"type": "telegram", "to": "8296787175"}],
         )
+        reporter.stop()
 
         logger.info(f"=== ENGAGEMENT COMPLETE: {state.engagement_id} ===")
         return {

@@ -21,6 +21,19 @@ def _cost(model: str, input_tokens: int, output_tokens: int) -> float:
     p = PRICING.get(model, {"input": 3.0, "output": 15.0})
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
+# ── Average latency per model (seconds per call) ─────────────────────────────
+# Based on observed p50 latency. Opus is slower; complex prompts push higher.
+LATENCY_SECONDS = {
+    "anthropic/claude-haiku-4-5":  8,
+    "anthropic/claude-sonnet-4-6": 35,
+    "anthropic/claude-opus-4-6":   70,
+    "openai/gpt-4o-mini":          6,
+    "openai/gpt-4o":               20,
+    "openai/gpt-4-turbo":          40,
+    "gemini/gemini-2.0-flash":     5,
+    "gemini/gemini-2.0-pro":       18,
+}
+
 # ── Workstream token estimates ────────────────────────────────────────────────
 # (input_tokens, output_tokens, model, n_calls, can_escalate_to_opus)
 WORKSTREAM_ESTIMATES = {
@@ -86,6 +99,19 @@ WORKSTREAM_ESTIMATES = {
 }
 
 
+def _time_for_calls(calls: list, multiplier: float) -> tuple[int, int]:
+    """Returns (low_seconds, high_seconds) for a list of calls."""
+    low = sum(LATENCY_SECONDS.get(c["model"], 30) * 0.7 for c in calls)
+    high = sum(LATENCY_SECONDS.get(c["model"], 30) * 1.6 for c in calls)
+    return int(low * multiplier), int(high * multiplier)
+
+
+def _fmt_time(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60}m {seconds % 60}s"
+
+
 def estimate(proactivity: str = "medium", has_data_files: bool = False,
              n_competitors: int = 0) -> dict:
     """
@@ -121,21 +147,38 @@ def estimate(proactivity: str = "medium", has_data_files: bool = False,
         if ws_name == "data" and has_data_files:
             ws_low = ws_high = 0.0
 
+        # Time estimate
+        t_low, t_high = _time_for_calls(ws["calls"], multiplier)
+        if ws_name == "research" and n_competitors > 0:
+            t_low  += int(30 * n_competitors * 0.7 * multiplier)
+            t_high += int(30 * n_competitors * 1.3 * multiplier)
+
         rows.append({
             "workstream": ws_name,
             "labels": labels,
             "low":  round(ws_low,  4),
             "high": round(ws_high, 4),
+            "time_low_s":  t_low,
+            "time_high_s": t_high,
             "escalation_risk": ws["escalation_risk"],
         })
         total_low  += ws_low
         total_high += ws_high
 
+    # Total time: intake (sequential) + max(parallel workstreams) + rest sequential
+    parallel_ws = ["research", "frameworks", "financial", "benchmarks"]
+    parallel_rows = [r for r in rows if r["workstream"] in parallel_ws]
+    seq_rows      = [r for r in rows if r["workstream"] not in parallel_ws]
+    time_low  = sum(r["time_low_s"]  for r in seq_rows) + (max((r["time_low_s"]  for r in parallel_rows), default=0))
+    time_high = sum(r["time_high_s"] for r in seq_rows) + (max((r["time_high_s"] for r in parallel_rows), default=0))
+
     return {
         "rows": rows,
-        "total_low":  round(total_low,  3),
-        "total_high": round(total_high, 3),
-        "proactivity": proactivity,
+        "total_low":    round(total_low,  3),
+        "total_high":   round(total_high, 3),
+        "time_low_s":   time_low,
+        "time_high_s":  time_high,
+        "proactivity":  proactivity,
         "note": "Estimates assume Anthropic-only. Add ~20% for retries and escalation to Opus on complex calls.",
     }
 
@@ -143,25 +186,30 @@ def estimate(proactivity: str = "medium", has_data_files: bool = False,
 def format_estimate(est: dict) -> str:
     lines = [
         "",
-        "=" * 58,
-        "  ENGAGEMENT COST ESTIMATE",
-        "=" * 58,
+        "=" * 72,
+        "  ENGAGEMENT COST + TIME ESTIMATE",
+        "=" * 72,
         f"  Proactivity: {est['proactivity'].upper()}",
         "",
-        f"  {'Workstream':<22} {'Low':>8}  {'High':>8}  {'Escalation Risk'}",
-        f"  {'-'*22} {'-'*8}  {'-'*8}  {'-'*15}",
+        f"  {'Workstream':<22} {'Cost Low':>9} {'Cost High':>9}  {'Time Low':>9} {'Time High':>9}",
+        f"  {'-'*22} {'-'*9} {'-'*9}  {'-'*9} {'-'*9}",
     ]
     for row in est["rows"]:
+        parallel_tag = " *" if row["workstream"] in ("research","frameworks","financial","benchmarks") else "  "
         lines.append(
-            f"  {row['workstream']:<22} ${row['low']:>7.3f}  ${row['high']:>7.3f}  {row['escalation_risk']}"
+            f"  {row['workstream']:<22}{parallel_tag}"
+            f" ${row['low']:>7.3f}   ${row['high']:>7.3f}"
+            f"   {_fmt_time(row['time_low_s']):>8}  {_fmt_time(row['time_high_s']):>8}"
         )
     lines += [
-        f"  {'-'*22} {'-'*8}  {'-'*8}",
-        f"  {'TOTAL':<22} ${est['total_low']:>7.3f}  ${est['total_high']:>7.3f}",
-        "=" * 58,
-        f"  Estimated range: ${est['total_low']:.2f} - ${est['total_high']:.2f} USD",
-        f"  {est['note']}",
-        "=" * 58,
+        f"  {'-'*22} {'-'*9} {'-'*9}  {'-'*9} {'-'*9}",
+        f"  {'TOTAL':<24} ${est['total_low']:>7.3f}   ${est['total_high']:>7.3f}"
+        f"   {_fmt_time(est['time_low_s']):>8}  {_fmt_time(est['time_high_s']):>8}",
+        "=" * 72,
+        f"  Cost:  ${est['total_low']:.2f} - ${est['total_high']:.2f} USD",
+        f"  Time:  {_fmt_time(est['time_low_s'])} - {_fmt_time(est['time_high_s'])}  (* = runs in parallel)",
+        f"  Note:  {est['note']}",
+        "=" * 72,
         "",
     ]
     return "\n".join(lines)
