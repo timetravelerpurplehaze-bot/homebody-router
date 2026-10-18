@@ -220,3 +220,16 @@ The goal: Be helpful without being annoying. Check in a few times a day, do usef
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
+
+## Development
+
+Python 3.12 CLI tools run from the repo root. There is no dev server. Install dependencies with `python3 -m pip install --user -r requirements.txt`.
+
+Commands that work without API keys:
+
+- `python3 -m router.cli status`
+- `python3 router/_test_smoke.py`
+- `python3 -m agents.strategy_consultant.cli estimate --proactivity high`
+- `python3 -m agents.strategy_consultant.validate data_processor`
+
+Heuristic classification is available through the library (`RouterConfig(classifier_backend="heuristic")`). `python -m router.cli` registers `status` as a subcommand, so a free-text query is parsed as that subcommand and never reaches the router. Live model calls need real keys in `router/.env` (copy from `router/.env.example`). Placeholder values are ignored.
